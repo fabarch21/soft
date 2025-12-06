@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Mapping — Full Export (Offscreen renderer pixel-perfect)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial;background:#0a0a0a;color:#fff;padding-top:72px}
+    .top-bar{position:fixed;top:0;left:0;right:0;height:64px;background:#071018;display:flex;align-items:center;gap:12px;padding:10px 14px;z-index:1000}
+    .btn{padding:8px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.02);color:#fff;cursor:pointer}
+    .btn-danger{background:rgba(220,38,38,0.12);border-color:#dc2626;color:#fff}
+    .select,.input{background:rgba(255,255,255,0.03);color:#fff;border:1px solid rgba(255,255,255,0.06);padding:6px 8px;border-radius:6px}
+    .panel{position:fixed;left:12px;top:72px;background:rgba(10,10,10,0.95);padding:12px;border-radius:8px;min-width:360px;z-index:100}
+    .row{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+    label.checkbox{display:inline-flex;align-items:center;gap:8px;color:#cbd5e1}
+    #miniLog{margin-top:8px;font-family:monospace;font-size:12px;color:#9ca3af;max-height:220px;overflow:auto;background:rgba(0,0,0,0.4);padding:8px;border-radius:6px}
+    #main-viewport{position:fixed;top:72px;left:380px;right:20px;bottom:20px;background:#081018;border-radius:6px;overflow:hidden}
+    .preview-grid{position:absolute;bottom:12px;right:12px;display:grid;grid-template-columns:repeat(2,200px);gap:10px;z-index:30}
+    .preview-screen{width:200px;height:150px;background:#050607;border-radius:8px;border:1px solid rgba(13,148,136,0.08);overflow:hidden;position:relative}
+    .preview-label{position:absolute;top:6px;left:6px;background:rgba(13,148,136,0.9);color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;z-index:10}
+  </style>
+</head>
+<body>
+  <div class="top-bar">
+    <div style="font-weight:800;color:#0dd6b6">Mapping — Offscreen Export (pixel-perfect)</div>
+    <button class="btn" onclick="uploadContent()">📁 Load content</button>
+
+    <label class="small">FPS
+      <select id="exportFps" class="select"><option>24</option><option>25</option><option selected>30</option><option>60</option></select>
+    </label>
+
+    <label class="small">Resolution
+      <select id="exportRes" class="select">
+        <option value="preview">Preview</option>
+        <option value="1080p">FullHD (1920×1080)</option>
+        <option value="4k" selected>4K (3840×2160)</option>
+      </select>
+    </label>
+
+    <label class="small">Segment (s)
+      <input id="segmentSeconds" class="input" type="number" value="5" min="1" style="width:70px"/>
+    </label>
+
+    <button id="recordBtn" class="btn btn-danger" onclick="toggleRecording()">🔴 Record</button>
+
+    <button class="btn" onclick="startExport()">⬇️ Export selected</button>
+
+    <div style="margin-left:auto;color:#90a4ae;font-size:13px">Export uses offscreen renderer → exact viewer pixels</div>
+  </div>
+
+  <div class="panel" id="controls">
+    <h3 style="color:#0dd6b6;margin:0 0 6px 0">Export options</h3>
+    <div class="row">
+      <label class="checkbox"><input id="proj0" type="checkbox" checked/> Proj 1</label>
+      <label class="checkbox"><input id="proj1" type="checkbox" checked/> Proj 2</label>
+      <label class="checkbox"><input id="proj2" type="checkbox" checked/> Proj 3</label>
+      <label class="checkbox"><input id="proj3" type="checkbox" checked/> Proj 4</label>
+    </div>
+
+    <div class="row">
+      <label class="checkbox"><input id="exportMain" type="checkbox" /> Export main view</label>
+    </div>
+
+    <div class="row">
+      <button class="btn" onclick="testSeek()">Run quick seek test</button>
+      <button class="btn" onclick="downloadSample()">Download ffmpeg script</button>
+    </div>
+
+    <div class="row" style="margin-top:10px;gap:12px;align-items:center">
+      <div>Progress: <b id="progress">idle</b></div>
+      <div>Frames added: <b id="frameCount">0</b></div>
+    </div>
+
+    <div id="miniLog">mini-log...</div>
+  </div>
+
+  <div id="main-viewport">
+    <div class="preview-grid">
+      <div class="preview-screen"><div class="preview-label">Proj 1 <button class="btn" style="float:right;margin-left:6px" onclick="downloadLast('proj',0)">DL</button></div><canvas id="preview1"></canvas></div>
+      <div class="preview-screen"><div class="preview-label">Proj 2 <button class="btn" style="float:right;margin-left:6px" onclick="downloadLast('proj',1)">DL</button></div><canvas id="preview2"></canvas></div>
+      <div class="preview-screen"><div class="preview-label">Proj 3 <button class="btn" style="float:right;margin-left:6px" onclick="downloadLast('proj',2)">DL</button></div><canvas id="preview3"></canvas></div>
+      <div class="preview-screen"><div class="preview-label">Proj 4 <button class="btn" style="float:right;margin-left:6px" onclick="downloadLast('proj',3)">DL</button></div><canvas id="preview4"></canvas></div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+  <script>
+  // Full app with pixel-perfect offscreen export
+  let scene, camera, renderer, cube, projectors = [], contentTexture = null, contentVideo = null;
+  const dpr = window.devicePixelRatio || 1;
+  const miniLogEl = () => document.getElementById('miniLog');
+  function miniLog(msg){ console.log(msg); const el = miniLogEl(); el.textContent += (el.textContent ? '\n' : '') + msg; el.scrollTop = el.scrollHeight; }
+
+  // recording state
+  let isRecording = false;
+  const recorders = [];
+  const lastRecordedBlobs = { proj: [null,null,null,null], main: null };
+
+  // export renderer cache (single offscreen renderer reused for full export)
+  let _exportRendererCache = null;
+
+  initScene();
+
+  function initScene(){
+    scene = new THREE.Scene(); scene.background = new THREE.Color(0x0a0a0a);
+    camera = new THREE.PerspectiveCamera(50, 1.6, 0.1, 1000); camera.position.set(15,10,15); camera.lookAt(0,0,0);
+    renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
+    renderer.setSize(1000, 600);
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    document.getElementById('main-viewport').appendChild(renderer.domElement);
+
+    const ambient = new THREE.AmbientLight(0x404040,0.5); scene.add(ambient);
+    const dir = new THREE.DirectionalLight(0xffffff,0.5); dir.position.set(10,20,10); scene.add(dir);
+    const grid = new THREE.GridHelper(50,50,0x444444,0x222222); scene.add(grid);
+
+    const geom = new THREE.BoxGeometry(4,6,4);
+    const mat = new THREE.MeshStandardMaterial({ color:0x888888, roughness:0.8, metalness:0.2 });
+    cube = new THREE.Mesh(geom, mat); cube.position.set(0,3,0); scene.add(cube);
+
+    createProjector(0,8,0,8,'Proj 1'); createProjector(1,-8,0,8,'Proj 2'); createProjector(2,-8,0,0,'Proj 3'); createProjector(3,8,0,0,'Proj 4');
+
+    for (let i=0;i<4;i++){
+      const cnv = document.getElementById(`preview${i+1}`);
+      cnv.style.width='200px'; cnv.style.height='150px';
+      cnv.width = Math.max(1, Math.floor(200 * dpr)); cnv.height = Math.max(1, Math.floor(150 * dpr));
+      projectors[i].rtPreview = new THREE.WebGLRenderTarget(cnv.width, cnv.height, { minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter, format:THREE.RGBAFormat });
+    }
+
+    window.addEventListener('resize', ()=>{ renderer.setSize(window.innerWidth - 420, window.innerHeight - 92); });
+    animate();
+    miniLog('scene ready — offscreen export will match viewer pixels');
+  }
+
+  function createProjector(id,x,y,z,label){
+    const g = new THREE.Group(); g.position.set(x,y,z); scene.add(g);
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.3,0.8,8), new THREE.MeshStandardMaterial({ color:0x0d9488 })); cone.rotation.x = Math.PI; g.add(cone);
+    const cam = new THREE.PerspectiveCamera(45, 16/9, 0.5, 30); cam.position.copy(g.position); cam.lookAt(cube.position);
+    projectors.push({ id, label, group:g, camera:cam, rtPreview:null });
+  }
+
+  function animate(){
+    requestAnimationFrame(animate);
+    if (contentVideo && !contentVideo.paused) cube.rotation.y += 0.005;
+    projectors.forEach(p => { p.camera.position.copy(p.group.position); p.camera.lookAt(cube.position); });
+    renderPreviews();
+    renderer.setRenderTarget(null); renderer.clear(); renderer.render(scene, camera);
+  }
+
+  // draw preview using CPU conversion to mimic final colors (keeps preview matching)
+  function sRGBFromLinear(x){ if (x <= 0.0031308) return 12.92 * x; return 1.055 * Math.pow(x, 1.0 / 2.4) - 0.055; }
+  function convertLinearPixelsToSRGB(srcU8, w, h, exposure=1.2, intensity=1.0){
+    const out = new Uint8ClampedArray(w*h*4); const row = w*4;
+    for (let y=0;y<h;y++){ const srcRow=y*row; for (let x=0;x<w;x++){ const si = srcRow + x*4; const r_lin = srcU8[si]/255, g_lin = srcU8[si+1]/255, b_lin = srcU8[si+2]/255; const r_e = Math.min(1, r_lin*exposure*intensity), g_e = Math.min(1, g_lin*exposure*intensity), b_e = Math.min(1, b_lin*exposure*intensity); const r_s = sRGBFromLinear(r_e), g_s = sRGBFromLinear(g_e), b_s = sRGBFromLinear(b_e); const di = ((h-1-y)*row) + x*4; out[di] = Math.round(Math.max(0,Math.min(255,r_s*255))); out[di+1] = Math.round(Math.max(0,Math.min(255,g_s*255))); out[di+2] = Math.round(Math.max(0,Math.min(255,b_s*255))); out[di+3] = 255; } }
+    return out;
+  }
+
+  function drawPreviewFromRT_WithConversion(rt, canvas){
+    const ctx = canvas.getContext('2d');
+    const w = rt.width, h = rt.height;
+    const pixels = new Uint8Array(w*h*4);
+    try {
+      renderer.readRenderTargetPixels(rt, 0, 0, w, h, pixels);
+      const converted = convertLinearPixelsToSRGB(pixels, w, h, renderer.toneMappingExposure, 1.0);
+      const imageData = new ImageData(converted, w, h);
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+      ctx.putImageData(imageData, 0, 0);
+    } catch (e) {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      if (contentTexture && contentTexture.image) try { ctx.drawImage(contentTexture.image, 0, 0, canvas.width, canvas.height); } catch(e){}
+    }
+  }
+
+  function renderPreviews(){
+    const saved = scene.children.map(c => c.visible);
+    scene.children.forEach(c => c.visible = (c === cube));
+    const prevMat = cube.material;
+    const basic = contentTexture ? new THREE.MeshBasicMaterial({ map: contentTexture }) : prevMat;
+
+    projectors.forEach((p,i) => {
+      const canvas = document.getElementById(`preview${i+1}`);
+      cube.material = basic;
+      renderer.setRenderTarget(p.rtPreview);
+      renderer.clear();
+      renderer.render(scene, p.camera);
+      renderer.setRenderTarget(null);
+      cube.material = prevMat;
+
+      drawPreviewFromRT_WithConversion(p.rtPreview, canvas);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'rgba(13,148,136,0.9)'; ctx.fillRect(6*dpr,6*dpr,60*dpr,18*dpr);
+      ctx.fillStyle = '#fff'; ctx.font = `${11*dpr}px Arial`; ctx.fillText(p.label, 10*dpr, 20*dpr);
+    });
+
+    scene.children.forEach((c, idx) => c.visible = saved[idx]);
+  }
+
+  // recording (same as before)
+  function toggleRecording(){ if (isRecording) stopRecording(); else startRecording(); }
+  function startRecording(){
+    if (!contentTexture && !contentVideo && !confirm('No content loaded. Record anyway?')) return;
+    isRecording = true; document.getElementById('recordBtn').textContent = '⏹️ Stop'; miniLog('Recording started');
+    for (let i=0;i<4;i++){
+      const canvas = document.getElementById(`preview${i+1}`);
+      try {
+        const stream = canvas.captureStream(30);
+        const mr = new MediaRecorder(stream, {});
+        const rec = { type:'proj', index:i, mediaRecorder: mr, chunks: [] };
+        mr.ondataavailable = e => { if (e.data && e.data.size) rec.chunks.push(e.data); };
+        mr.onstop = () => { try { const blob = new Blob(rec.chunks, { type: rec.chunks[0]?.type || 'video/webm' }); lastRecordedBlobs.proj[i] = blob; miniLog(`Projector ${i} blob ready, size=${blob.size}`); } catch(e){ miniLog('error building proj blob: ' + (e && e.message ? e.message : e)); } };
+        mr.start(); recorders.push(rec);
+      } catch(e){ miniLog('recorder create failed for preview ' + i + ': ' + (e && e.message ? e.message : e)); }
+    }
+    try {
+      const mainStream = renderer.domElement.captureStream(30);
+      const mr = new MediaRecorder(mainStream, {});
+      const rec = { type:'main', index:0, mediaRecorder: mr, chunks: [] };
+      mr.ondataavailable = e => { if (e.data && e.data.size) rec.chunks.push(e.data); };
+      mr.onstop = () => { try { const blob = new Blob(rec.chunks, { type: rec.chunks[0]?.type || 'video/webm' }); lastRecordedBlobs.main = blob; miniLog('Main blob ready, size=' + blob.size); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `main_${Date.now()}.webm`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),2000); } catch(e){ miniLog('error building main blob: ' + (e && e.message ? e.message : e)); } };
+      mr.start(); recorders.push(rec);
+    } catch(e){ miniLog('main recorder failed: ' + (e && e.message ? e.message : e)); }
+    if (contentVideo) { contentVideo.addEventListener('ended', onVideoEndedDuringRecord); try{ contentVideo.currentTime = 0; }catch(e){} contentVideo.play().catch(()=>{}); }
+  }
+  function onVideoEndedDuringRecord(){ if (isRecording) toggleRecording(); }
+  function stopRecording(){ if (!isRecording) return; isRecording = false; document.getElementById('recordBtn').textContent = '🔴 Record'; recorders.forEach(r => { try { r.mediaRecorder.stop(); } catch(e){ miniLog('stop error: ' + (e && e.message ? e.message : e)); } }); recorders.length = 0; if (contentVideo) try { contentVideo.pause(); } catch(e){} miniLog('Recording stopped'); alert('Recording stopped. Use DL buttons under previews to download.'); }
+  function downloadLast(kind, index){ if (kind === 'proj'){ const blob = lastRecordedBlobs.proj[index]; if (!blob) return alert('No recording for this projector'); const ext = blob.type.includes('mp4') ? '.mp4' : '.webm'; const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `proj_${index}_${Date.now()}${ext}`; a.click(); URL.revokeObjectURL(url); } else if (kind === 'main'){ const blob = lastRecordedBlobs.main; if (!blob) return alert('No main recording'); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `main_${Date.now()}.webm`; a.click(); URL.revokeObjectURL(url); } }
+
+  // ---------- Offscreen export helpers ----------
+  async function createExportRendererForSize(exportW, exportH){
+    // cleanup previous cache if diameter differs
+    if (_exportRendererCache && (_exportRendererCache.w !== exportW || _exportRendererCache.h !== exportH)){
+      disposeExportRendererCache();
+    }
+    if (_exportRendererCache) return _exportRendererCache;
+    const canvas = document.createElement('canvas');
+    canvas.width = exportW; canvas.height = exportH;
+    canvas.style.display = 'none';
+    document.body.appendChild(canvas);
+    const exportRenderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, preserveDrawingBuffer: true });
+    // copy viewer's pipeline precisely
+    exportRenderer.outputEncoding = renderer.outputEncoding;
+    exportRenderer.toneMapping = renderer.toneMapping;
+    exportRenderer.toneMappingExposure = renderer.toneMappingExposure;
+    exportRenderer.setSize(exportW, exportH);
+    exportRenderer.setPixelRatio(1);
+    _exportRendererCache = { exportRenderer, canvas, w: exportW, h: exportH };
+    return _exportRendererCache;
+  }
+
+  async function captureWithExportRenderer(exportRenderer, offscreenCanvas, zip, frameIndex, selectedProjectors){
+    // render each selected projector in sequence and toBlob from pixel-accurate canvas
+    for (let i = 0; i < selectedProjectors.length; i++){
+      const p = selectedProjectors[i];
+      const prevAspect = p.camera.aspect;
+      p.camera.aspect = offscreenCanvas.width / offscreenCanvas.height;
+      p.camera.updateProjectionMatrix();
+      // render into offscreen canvas via exportRenderer
+      exportRenderer.setRenderTarget(null);
+      exportRenderer.clear();
+      exportRenderer.render(scene, p.camera);
+      // let GPU finish a frame
+      await new Promise(r => requestAnimationFrame(r));
+      // toBlob
+      await new Promise(resolve => {
+        offscreenCanvas.toBlob(blob => {
+          const name = `proj_${p.id}/frame_${String(frameIndex).padStart(6,'0')}.png`;
+          if (blob) zip.file(name, blob);
+          resolve();
+        }, 'image/png');
+      });
+      p.camera.aspect = prevAspect;
+      p.camera.updateProjectionMatrix();
+    }
+  }
+
+  async function captureMainWithExportRenderer(exportRenderer, offscreenCanvas, zip, frameIndex){
+    exportRenderer.setRenderTarget(null);
+    exportRenderer.clear();
+    exportRenderer.render(scene, camera);
+    await new Promise(r => requestAnimationFrame(r));
+    await new Promise(resolve => {
+      offscreenCanvas.toBlob(blob => {
+        const name = `main/frame_${String(frameIndex).padStart(6,'0')}.png`;
+        if (blob) zip.file(name, blob);
+        resolve();
+      }, 'image/png');
+    });
+  }
+
+  function disposeExportRendererCache(){
+    if (!_exportRendererCache) return;
+    try {
+      const exp = _exportRendererCache.exportRenderer;
+      exp.dispose();
+      const gl = exp.getContext && exp.getContext();
+      if (gl) {
+        const lose = gl.getExtension('WEBGL_lose_context') || gl.getExtension('WEBKIT_WEBGL_lose_context');
+        if (lose) try { lose.loseContext(); } catch(e){}
+      }
+      if (_exportRendererCache.canvas && _exportRendererCache.canvas.parentNode) _exportRendererCache.canvas.parentNode.removeChild(_exportRendererCache.canvas);
+    } catch(e){}
+    _exportRendererCache = null;
+    miniLog('export renderer disposed');
+  }
+
+  // ---------- Seek helpers (robust) ----------
+  async function waitForFrameAfterSeek(video, targetTime, timeoutMs = 12000){
+    const start = performance.now(); let finished = false;
+    return await new Promise(async (resolve) => {
+      const finish = (ok) => { if (finished) return; finished = true; resolve(ok); };
+      let to = setTimeout(async () => {
+        let ok = false;
+        for (let a=0;a<3 && !ok;a++){
+          try { await video.play().catch(()=>{}); await new Promise(r=>setTimeout(r, 180)); video.pause(); if (Math.abs(video.currentTime - targetTime) < 0.12) ok = true; } catch(e){}
+        }
+        finish(ok);
+      }, timeoutMs);
+      try {
+        try { video.currentTime = Math.min(targetTime, Math.max(0, video.duration)); } catch(e){}
+        if (typeof video.requestVideoFrameCallback === 'function'){
+          const cb = (now, metadata) => {
+            if (finished) return;
+            const delta = Math.abs(video.currentTime - targetTime);
+            if (delta < 0.06 || (performance.now() - start) > timeoutMs) { clearTimeout(to); finish(delta < 0.12); return; }
+            try { video.requestVideoFrameCallback(cb); } catch(e) {}
+          };
+          try { video.requestVideoFrameCallback(cb); } catch(e) {
+            video.addEventListener('seeked', function onS(){ video.removeEventListener('seeked', onS); requestAnimationFrame(()=>requestAnimationFrame(()=>{ clearTimeout(to); finish(true); })); });
+          }
+        } else {
+          video.addEventListener('seeked', function onS(){ video.removeEventListener('seeked', onS); requestAnimationFrame(()=>requestAnimationFrame(()=>{ clearTimeout(to); finish(true); })); });
+        }
+      } catch (err) {
+        clearTimeout(to);
+        let ok = false;
+        for (let a=0;a<3 && !ok;a++){
+          try { await video.play().catch(()=>{}); await new Promise(r=>setTimeout(r, 150)); video.pause(); if (Math.abs(video.currentTime - targetTime) < 0.12) ok = true; } catch(e){}
+        }
+        finish(ok);
+      }
+    });
+  }
+
+  function ensureVideoSeekable(video){
+    return new Promise((resolve,reject) => {
+      if (video.readyState >= 2 && video.duration && !isNaN(video.duration)) return resolve();
+      const onLoad = () => { cleanup(); resolve(); }, onErr = () => { cleanup(); reject(new Error('video load error')); };
+      const t = setTimeout(()=>{ cleanup(); reject(new Error('video metadata timeout')); }, 5000);
+      function cleanup(){ clearTimeout(t); video.removeEventListener('loadedmetadata', onLoad); video.removeEventListener('error', onErr); }
+      video.addEventListener('loadedmetadata', onLoad); video.addEventListener('error', onErr);
+    });
+  }
+
+  // ---------------- Export (offscreen renderer usage) ----------------
+  async function startExport(){
+    if (!contentVideo) return alert('Load a video first');
+    const fps = parseInt(document.getElementById('exportFps').value || '30', 10);
+    const res = document.getElementById('exportRes').value;
+    const segmentSeconds = Math.max(1, parseInt(document.getElementById('segmentSeconds').value || '5', 10));
+    const selected = [ document.getElementById('proj0').checked, document.getElementById('proj1').checked, document.getElementById('proj2').checked, document.getElementById('proj3').checked ];
+    const exportMain = document.getElementById('exportMain').checked;
+    if (!selected.some(Boolean) && !exportMain) return alert('Select at least one projector or main view');
+
+    const exportW = (res === '4k') ? 3840 : (res === '1080p' ? 1920 : projectors[0].rtPreview.width);
+    const exportH = (res === '4k') ? 2160 : (res === '1080p' ? 1080 : projectors[0].rtPreview.height);
+    const maxTexture = renderer.capabilities.maxTextureSize;
+    if (exportW > maxTexture || exportH > maxTexture) return alert(`Resolution exceeds GPU limit (${maxTexture}) — choose lower res`);
+    if (res === 'preview' && !confirm('You selected Preview size (small PNGs). Continue?')) return;
+
+    miniLog(`Starting offscreen export: ${exportW}x${exportH} @${fps}fps, seg=${segmentSeconds}s`);
+    await ensureVideoSeekable(contentVideo);
+    const duration = contentVideo.duration;
+    const totalFrames = Math.round(duration * fps);
+    const segmentFrames = Math.max(1, Math.round(segmentSeconds * fps));
+    const segments = [];
+    for (let s = 0; s < totalFrames; s += segmentFrames) segments.push([s, Math.min(totalFrames, s + segmentFrames)]);
+    miniLog(`Total frames=${totalFrames} across ${segments.length} segment(s)`);
+
+    // Prepare export renderer once for chosen size
+    const cache = await createExportRendererForSize(exportW, exportH);
+    const exportRenderer = cache.exportRenderer;
+    const offscreenCanvas = cache.canvas;
+
+    // build selected projectors array objects with ids
+    const selectedProjectors = projectors.filter((p, idx) => selected[idx]);
+
+    for (let segIndex = 0; segIndex < segments.length; segIndex++){
+      const [startF, endF] = segments[segIndex];
+      miniLog(`Exporting segment ${segIndex+1}/${segments.length}: frames ${startF}..${endF-1}`);
+      const zip = new JSZip();
+      selected.forEach((sel, i) => { if (sel) zip.folder(`proj_${i}`); });
+      if (exportMain) zip.folder('main');
+
+      let framesAdded = 0;
+      try {
+        for (let frameIndex = startF; frameIndex < endF; frameIndex++){
+          const t = Math.min(frameIndex / fps, duration);
+          const progressEl = document.getElementById('progress'); if (progressEl) progressEl.textContent = `seg ${segIndex+1}/${segments.length} frame ${frameIndex+1}/${totalFrames} t=${t.toFixed(3)}s`;
+          miniLog(`seek -> ${t.toFixed(3)}s (frame ${frameIndex})`);
+          const ok = await waitForFrameAfterSeek(contentVideo, t, 12000);
+          if (!ok) miniLog(`seek warning: frame ${frameIndex} timed out (attempted fallback)`);
+          if (contentTexture && contentTexture.isVideoTexture) contentTexture.needsUpdate = true;
+
+          if (selectedProjectors.length) {
+            await captureWithExportRenderer(exportRenderer, offscreenCanvas, zip, frameIndex, selectedProjectors);
+            framesAdded += selectedProjectors.length;
+            const fc = document.getElementById('frameCount'); if (fc) fc.textContent = framesAdded;
+          }
+
+          if (exportMain){
+            await captureMainWithExportRenderer(exportRenderer, offscreenCanvas, zip, frameIndex);
+            framesAdded++; const fc = document.getElementById('frameCount'); if (fc) fc.textContent = framesAdded;
+          }
+
+          await new Promise(r => setTimeout(r, 6));
+        }
+
+        miniLog(`Segment ${segIndex+1}: framesAdded=${framesAdded}. Generating ZIP...`);
+        const progressEl2 = document.getElementById('progress'); if (progressEl2) progressEl2.textContent = 'zipping...';
+        const outBlob = await zip.generateAsync({ type:'blob', compression:'DEFLATE', compressionOptions:{ level: 6 } }, meta => { const pe = document.getElementById('progress'); if (pe) pe.textContent = `zipping ${Math.round(meta.percent)}%`; });
+        const fname = `proj_export_seg${segIndex+1}_${Date.now()}.zip`;
+        saveAs(outBlob, fname);
+        miniLog(`Segment ${segIndex+1} ZIP saved: ${fname}`);
+      } catch (err) {
+        miniLog('Error during export segment: ' + (err && err.message ? err.message : err));
+        try {
+          miniLog('Attempting partial ZIP save...');
+          const partial = await zip.generateAsync({ type:'blob', compression:'DEFLATE', compressionOptions:{ level:6 } });
+          const pf = `proj_partial_seg${segIndex+1}_${Date.now()}.zip`;
+          const a = document.createElement('a'); a.href = URL.createObjectURL(partial); a.download = pf; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+          miniLog('Partial saved: ' + pf);
+        } catch(e2){ miniLog('Partial zip failed: ' + (e2 && e2.message ? e2.message : e2)); }
+      }
+    }
+
+    // cleanup
+    disposeExportRendererCache();
+    const pe = document.getElementById('progress'); if (pe) pe.textContent = 'idle';
+    miniLog('Export finished');
+  }
+
+  // ---------- utilities ----------
+  async function uploadContent(){
+    const input = document.createElement('input'); input.type='file'; input.accept='image/*,video/*';
+    input.onchange = async (e) => {
+      const file = e.target.files[0]; if (!file) return;
+      const url = URL.createObjectURL(file);
+      miniLog(`Loaded: ${file.name}`);
+      if (file.type.startsWith('video/')){
+        const v = document.createElement('video'); v.src = url; v.crossOrigin = 'anonymous'; v.loop = false; v.muted = true; v.playsInline = true;
+        await v.play().catch(()=>{}); v.pause();
+        contentVideo = v;
+        contentTexture = new THREE.VideoTexture(v);
+        contentTexture.minFilter = THREE.LinearFilter; contentTexture.magFilter = THREE.LinearFilter; contentTexture.encoding = THREE.sRGBEncoding;
+        cube.material = new THREE.MeshBasicMaterial({ map: contentTexture });
+        contentTexture.needsUpdate = true;
+        miniLog(`Loaded video: ${file.name} dur=${v.duration}s`);
+      } else {
+        const img = new Image(); img.crossOrigin = 'anonymous';
+        img.onload = ()=> { contentTexture = new THREE.Texture(img); contentTexture.needsUpdate = true; contentTexture.encoding = THREE.sRGBEncoding; cube.material = new THREE.MeshBasicMaterial({ map: contentTexture }); miniLog('Loaded image'); };
+        img.src = url;
+      }
+    };
+    input.click();
+  }
+
+  async function testSeek(){
+    if (!contentVideo) return alert('Load a video first');
+    const fps = parseInt(document.getElementById('exportFps').value || '30',10);
+    miniLog('Running quick seek test (8 frames)...');
+    await ensureVideoSeekable(contentVideo);
+    for (let i=0;i<8;i++){
+      const t = Math.min(i / fps, contentVideo.duration);
+      miniLog(`Seeking to ${t.toFixed(3)}s`);
+      const ok = await waitForFrameAfterSeek(contentVideo, t, 8000);
+      miniLog(`seek result ${i}: ok=${ok} currentTime=${contentVideo.currentTime.toFixed(6)} readyState=${contentVideo.readyState}`);
+    }
+    miniLog('Quick seek test done.');
+  }
+
+  function downloadSample(){
+    const txt = [
+      '# ffmpeg quick script (re-encode GOP=30 and export PNG sequence)',
+      '',
+      'ffmpeg -i input.mp4 -c:v libx264 -g 30 -keyint_min 30 -sc_threshold 0 -preset slow -crf 18 output_gop30.mp4',
+      'ffmpeg -i output_gop30.mp4 -vf fps=30 out_%06d.png',
+      '',
+      'ffmpeg -framerate 30 -i out_%06d.png -c:v prores_ks -profile:v 3 proj_prores.mov',
+    ].join('\n');
+    const blob = new Blob([txt], { type:'text/plain' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ffmpeg_instructions.txt'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+  }
+
+  window.uploadContent = uploadContent;
+  window.startExport = startExport;
+  window.testSeek = testSeek;
+  window.downloadSample = downloadSample;
+  window.downloadLast = downloadLast;
+  </script>
+</body>
+</html>
